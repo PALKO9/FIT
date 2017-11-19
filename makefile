@@ -1,4 +1,4 @@
- all: isa.cpp 
+ all: isanew.cpp 
 	 g++ isanew.cpp -o isanew -lrt -pthread
 
   clean: 
