@@ -18,6 +18,22 @@
 #include <netinet/ip_icmp.h>
 #include <netdb.h>
 #include <signal.h>
+#include <pthread.h>
+#include <unistd.h>     /* Symbolic Constants */
+#include <sys/types.h>  /* Primitive System Data Types */ 
+#include <errno.h>      /* Errors */
+#include <stdio.h>      /* Input/Output */
+#include <stdlib.h>     /* General Utilities */
+#include <pthread.h>    /* POSIX Threads */
+#include <string.h>     /* String handling */
+
+int okpackets=0;
+
+typedef struct str_thdata
+{
+    int kpackets;
+    char message[100];
+} thdata;
 
 struct sigaction act;
 
@@ -46,19 +62,38 @@ uint16_t checksum(void *data, size_t length)
 	return (~sum);
 }
 
+void * print_message_function (void *ptr  );
+
+ bool isValidIpAddress(char *ipAddress)
+{
+    struct sockaddr_in sa;
+    int result = inet_pton(AF_INET, ipAddress, &(sa.sin_addr));
+    return result != 0;
+}
+
+bool isValidIp6Address(char *ipAddress)
+{
+    struct sockaddr_in6 sa;
+    int result = inet_pton(AF_INET6, ipAddress, &(sa.sin6_addr));
+    return result != 0;
+}
+    
+ 
+
 int main(int argc, char** argv)
 {
+pthread_t thread1;
 int datasize = 64;
 int sequence=1;
 int lenght;
 int sockfd;
-int okpackets=0;
+
 int allpackets=0;
   socklen_t size;
 char buffer[1024];
 int s;
 int rv;
-char IP_string_clike[] = "172.217.23.238";
+//char IP_string_clike[] = "172.217.23.238";
 std::string IP_string (""); //172.217.23.238  2a00:1450:400d:802::1000
 std::string str1 (":");
 std::string str2 (".");
@@ -68,20 +103,19 @@ fd_set mojSet;
 char ip6[50];
 iphdr *ip;
 float rtt_ms;
- unsigned int ttl = 255;
+
 icmphdr *icmp, *icmpRecv;
-unsigned short int pid = getpid();
+
 sockaddr_in sendSockAddr, receiveSockAddr;
+thdata data1;
 hostent *host; 
-host = gethostbyname(IP_string_clike);
+
 
 struct sockaddr_in ip4addr;
 struct sockaddr_in6 ip6addr;
 
 int ipv_flag=0;  //nastavi sa na 6 a 4 pre respektivne ipv
 int on =1;
-
-
 
 
 for (int q=0; q<argc; q++)
@@ -106,8 +140,35 @@ for (int q=0; q<argc; q++)
 	if (strcmp("-w",argv[q])==0)
 	{ }
 	
+	if (isValidIpAddress(argv[q]) && q+1==argc)
+	{
+		host = gethostbyname(argv[q]);
 
+		
+	}
+	else 
+	 {
+	 	if (isValidIpAddress(argv[q]))
+	 	{
+	 		if(fork() == 0)
+			{
+				host = gethostbyname(argv[q]);
+				break;
+			}
+			else continue;
+	 	}
+
+	 	
+	 }
 }
+unsigned short int pid = getpid();
+ unsigned int ttl = 255;
+//printf("%s\n", host->h_name);
+
+
+pthread_create (&thread1, NULL, print_message_function,(void *) &data1);
+
+
 
 struct sigaction act;
 act.sa_handler = &on_alarm;
@@ -119,7 +180,7 @@ alarm(5);
 
 
 
-IP_string="172.217.23.238";
+//IP_string="172.217.23.238";
 
 
 
@@ -178,10 +239,6 @@ icmp = (icmphdr *) icmpbuffer;
 
   	  printf("%s\n",icmpbuffer );
 
-time1.tv_nsec=0;
-  time1.tv_sec=0;
-
-
  
 
 sendSockAddr.sin_family = AF_INET;
@@ -192,10 +249,17 @@ icmp->checksum = 0;
     icmp->un.echo.sequence = sequence;
     icmp->checksum = checksum((unsigned char *)icmpbuffer, sizeof(icmphdr)+ sizeof(str)-1);
    int check = sendto(s, (char *)icmpbuffer, sizeof(icmphdr)+ sizeof(str)-1, 0, (sockaddr *)&sendSockAddr, sizeof(sockaddr));
-//printf("%d\n", check );
+
+
+time1.tv_nsec=0;
+  time1.tv_sec=0;
+
+
+   clock_gettime(CLOCK_MONOTONIC, &time1);
+	//printf("%d\n", check );
    allpackets++;
 /*
-  clock_gettime(CLOCK_MONOTONIC, &time1);
+  
   int check = send(s , message , strlen(message),0) ;
 printf("%d\n", check ); */
 
@@ -247,3 +311,30 @@ printf("%d\n", check ); */
 }
 
 
+void * print_message_function (void *ptr  )
+{
+   
+   timespec uptime;
+   uptime.tv_nsec=0;
+  uptime.tv_sec=0;
+
+  timespec uptime_current;
+   uptime_current.tv_nsec=0;
+  uptime_current.tv_sec=0;
+
+   clock_gettime(CLOCK_MONOTONIC, &uptime);
+   //printf("%d nigger\n",uptime.tv_sec);
+  
+   sleep(1);
+   
+   while(1)
+   {
+   		 clock_gettime(CLOCK_MONOTONIC, &uptime_current);
+   		if (((uptime_current.tv_sec-uptime.tv_sec)%5 == 0)){
+   		  printf("MAMMA MIA %d\n", okpackets);
+   		  sleep(1);
+   		}
+
+
+   }  return NULL; /* exit */
+}
