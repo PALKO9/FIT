@@ -26,8 +26,37 @@
 #include <stdlib.h>     /* General Utilities */
 #include <pthread.h>    /* POSIX Threads */
 #include <string.h>     /* String handling */
+#include <sys/time.h>
+#include <time.h>
+#include <math.h>
+
+#define RESTPACKETSIZE 28 //velkost IP a ICPMHDR
+
+
 
 int okpackets=0;
+int allpackets=0;
+struct sigaction act;
+int datasize = 57 -sizeof(timespec) ;
+hostent *host;
+int s;
+unsigned int ttl = 255;
+float rtt_ms;
+float rtt_new;
+float rtt_avg;
+float smean_rtt;
+float rtt_max;
+float rtt_min;
+int sendtime=100; 
+int verbose = 0;
+float rtime;
+int rflag=0;
+int rpackets;
+int ttime=300;
+float wtime=2000;
+
+
+
 
 typedef struct str_thdata
 {
@@ -35,13 +64,45 @@ typedef struct str_thdata
     char message[100];
 } thdata;
 
-struct sigaction act;
+
 
 void on_alarm(int signum)
 {
-    printf("TITTENALARM\n");
+    time_t rawtime;
+  struct tm * timeinfo;
+  char buffer [80];
+
+  time (&rawtime);
+  timeinfo = localtime (&rawtime);
+
+  struct timeval tv;
+  int millisec;
+
+  gettimeofday(&tv, NULL);
+  millisec = lrint(tv.tv_usec/10000.0);
+
+  strftime (buffer,80,"%F %T",timeinfo);
+  float rtt_avg_vypis;
+  float smean_rtt_vypis;
+
    
-        alarm(5);  // Reschedule alarm
+
+   double loss= (double )(allpackets - okpackets)/allpackets;
+  	loss=loss*100;
+  	if (okpackets==0)
+  	{
+  		printf("%s.%d %s status down\n",buffer,millisec,host->h_name);
+  		
+  	} 
+  	else 
+  	{
+  		rtt_avg_vypis = (float) (rtt_avg /okpackets);
+  		smean_rtt_vypis =  (float) (smean_rtt /okpackets);
+
+  	printf("%s.%d %s %.3lf%% packet loss, rtt min/avg/max/mdev %.3lf/%.3lf/%.3lf/%.3lf\n",buffer,millisec,host->h_name,loss,rtt_min,rtt_avg_vypis,rtt_max,float (sqrt(smean_rtt_vypis - rtt_avg_vypis*rtt_avg_vypis )));
+     
+  	}
+  	   alarm(3600);  // Reschedule alarm
 }
 
 uint16_t checksum(void *data, size_t length)
@@ -62,7 +123,7 @@ uint16_t checksum(void *data, size_t length)
 	return (~sum);
 }
 
-void * print_message_function (void *ptr  );
+
 
  bool isValidIpAddress(char *ipAddress)
 {
@@ -79,36 +140,276 @@ bool isValidIp6Address(char *ipAddress)
 }
     
  
+void * sender_func (void *ptr  )
+{
+  icmphdr *icmp;
+  unsigned short int pid = getpid();
+  srand(time(NULL));
+  sockaddr_in sendSockAddr;
+  timespec time1;
+   
+  while(1) {
+	
+	char icmpbuffer[65000];
+	char *p = icmpbuffer;
+
+	time1.tv_nsec=0;
+	time1.tv_sec=0;
+    clock_gettime(CLOCK_MONOTONIC, &time1);
+    
+    char b[sizeof(timespec)];
+    memcpy(b,&time1,sizeof(timespec));
+   // printf("%d\n", time1.tv_sec);
+
+	
+	char str[datasize];
+
+	const char alphanum[] =     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz123456789";
+ 
+    for (int i = 0; i < datasize; ++i) {
+
+        str[i] = alphanum[rand() % (sizeof(alphanum) - 1)];
+
+    }
+    
+   icmp = (icmphdr *) icmpbuffer;
+   icmp->type = ICMP_ECHO;
+   icmp->code = 0;
+   icmp->un.echo.id = pid;
+   icmp->checksum=0;
+   icmp->un.echo.sequence=1;
+   p+= sizeof(icmp);
+
+
+   for (int a =0 ; a!=sizeof(b); a++)
+  	{
+
+  		*p = b[a];
+  		p++;
+  		//printf("%s\n", *p);
+  	}
+/*
+  	p=p-sizeof(b);
+  	char c [sizeof(timespec)];
+  	memcpy(c,p,sizeof(timespec));
+  	timespec* kunt;
+  	kunt = (timespec*) c;
+  	p=p+strlen(b)+1;
+  	printf("\n %d  %d \n",time1.tv_sec, time1.tv_nsec );
+  	printf("\n %d  %d \n",kunt->tv_sec, kunt->tv_nsec );
+  	*/
+  for (int a =0 ; a!=strlen(str); a++)
+  	{
+
+  		*p = str[a];
+  		p++;
+  		//printf("%s\n", *p);
+  	}
+
+  	 // printf("%s\n",icmpbuffer );
+
+ 
+
+sendSockAddr.sin_family = AF_INET;
+  sendSockAddr.sin_port = 0;
+  memcpy(&(sendSockAddr.sin_addr), host->h_addr, host->h_length);
+
+icmp->checksum = 0;
+    icmp->un.echo.sequence = 1;
+    icmp->checksum = checksum((unsigned char *)icmpbuffer, sizeof(icmphdr)+ sizeof(str)-1+ sizeof(b));
+   int check = sendto(s, (char *)icmpbuffer, sizeof(icmphdr)+ sizeof(str)-1 + sizeof(b), 0, (sockaddr *)&sendSockAddr, sizeof(sockaddr));
+
+
+
+	//printf("%d check\n", check );
+   allpackets++;
+   usleep(sendtime*1000);
+}
+}
+
+
+
+
+
+
+
+
+
+
+
+void * receiver_func (void *ptr  )
+{
+	int lenght;
+	char buffer[65000];
+	sockaddr_in receiveSockAddr;
+ 	socklen_t size;
+ 	iphdr *ip;
+ 	icmphdr *icmpRecv;
+ 	unsigned short int pid = getpid();
+ 	char timestr[sizeof (timespec)];
+
+  		timespec* recv_time;
+		timespec actual_time;
+ 	//timespec recv_time;
+
+
+	while(1) {
+	  	lenght = 0;
+	  	 if ((lenght = recvfrom(s, buffer, 65000, 0, (sockaddr *)&receiveSockAddr, &size)) == -1)
+			{
+			  printf("chyba pri prijimani\n");
+			  break;
+			}
+
+		ip = (iphdr *) buffer;
+		icmpRecv = (icmphdr *) (buffer + ip->ihl * 4);
+		
+
+
+		if ((icmpRecv->un.echo.id == pid) && (icmpRecv->type == ICMP_ECHOREPLY)  && (lenght==datasize-1 + RESTPACKETSIZE + sizeof(timespec)))
+			{ //printf("sprava prijata\n");
+				memcpy(timestr,&buffer[28], sizeof(timespec));
+				recv_time = (timespec*) timestr;
+				clock_gettime(CLOCK_MONOTONIC, &actual_time);
+
+
+				struct timeval tv;
+				int millisec;
+
+				gettimeofday(&tv, NULL);
+				millisec = lrint(tv.tv_usec/10000.0);
+				struct tm * timeinfo;
+				time_t rawtime;
+				time (&rawtime);
+				timeinfo = localtime (&rawtime);
+
+				strftime (buffer,80,"%F %T",timeinfo);
+
+
+				if (okpackets == 0)
+				{
+
+					rtt_ms = (actual_time.tv_nsec-recv_time->tv_nsec)/(double)1000000;
+					rtt_ms += (actual_time.tv_sec - recv_time->tv_sec)*(double)1000;
+					if (rtt_ms <wtime)
+					{
+						rtt_avg=rtt_ms;
+						smean_rtt= (float) rtt_ms*rtt_ms;
+						rtt_max=rtt_ms;
+						rtt_min=rtt_ms;
+						okpackets++;
+						if (verbose==1)
+						{
+							printf("%s.%d %d bytes from %s time=%.3lf\n",buffer,millisec,datasize -1 + sizeof(timespec) + sizeof(icmphdr) ,host->h_name,rtt_ms);
+						}
+					}
+				}
+				else
+				{
+
+					rtt_new = (actual_time.tv_nsec-recv_time->tv_nsec)/(double)1000000;
+					rtt_new += (actual_time.tv_sec - recv_time->tv_sec)*(double)1000;
+
+					if (rtt_new < 2*rtt_ms)
+					{
+						rtt_avg = (float) rtt_new + rtt_avg;	
+						if (rtt_new > rtt_max)
+							{rtt_max = rtt_new;}
+						if (rtt_new < rtt_min)
+							{rtt_min = rtt_new;}
+						smean_rtt = (float) ((rtt_new * rtt_new) + smean_rtt) ;
+						rtt_ms=rtt_new;
+						okpackets++;
+
+						if (verbose==1)
+						{
+							printf("%s.%d %d bytes from %s time=%.3lf\n",buffer,millisec,datasize -1 + sizeof(timespec) + sizeof(icmphdr) ,host->h_name,rtt_new);
+						}
+
+						if (rflag==1)
+						{
+							if (rtt_new>rtime)
+							{
+								rpackets++;
+							}
+						}
+
+					}
+				
+
+				}
+
+
+				//printf("%f ms RTT\n",rtt_ms);
+			  
+
+			}
+
+	   
+	 
+
+	 	 //printf("%d / %d\n",okpackets, allpackets );
+		
+
+		}
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 int main(int argc, char** argv)
 {
-pthread_t thread1;
-int datasize = 64;
-int sequence=1;
-int lenght;
+pthread_t thread1, sender, receiver;
+  unsigned short int pid = getpid();
+
+
 int sockfd;
 
-int allpackets=0;
-  socklen_t size;
-char buffer[1024];
-int s;
+
+
+
 int rv;
 //char IP_string_clike[] = "172.217.23.238";
 std::string IP_string (""); //172.217.23.238  2a00:1450:400d:802::1000
 std::string str1 (":");
 std::string str2 (".");
-timespec time1, time2;
+timespec time2;
 int rc;
 fd_set mojSet;
 char ip6[50];
-iphdr *ip;
+
 float rtt_ms;
 
-icmphdr *icmp, *icmpRecv;
 
-sockaddr_in sendSockAddr, receiveSockAddr;
+
+
+
 thdata data1;
-hostent *host; 
+ 
+
 
 
 struct sockaddr_in ip4addr;
@@ -137,10 +438,31 @@ for (int q=0; q<argc; q++)
 		return 0;
 	}
 
+	if (strcmp("-s",argv[q])==0)
+	{ datasize = strtol(argv[q+1], NULL, 10);
+	  datasize++;}
+
+	 if (strcmp("-i",argv[q])==0)
+	{ sendtime=strtol(argv[q+1], NULL, 10);}
+
+	if (strcmp("-r",argv[q])==0)
+	{ rtime=strtof(argv[q+1], NULL);
+		rflag=1;}
+
+
+
+	 if (strcmp("-v",argv[q])==0)
+	{ verbose=1;}
+
+
 	if (strcmp("-w",argv[q])==0)
-	{ }
+	{ wtime=strtof(argv[q+1], NULL);
+	  wtime=wtime*1000;} 
+
+	 if (strcmp("-t",argv[q])==0)
+	{ ttime=strtol(argv[q+1], NULL, 10);}
 	
-	if (isValidIpAddress(argv[q]) && q+1==argc)
+	if ((isValidIpAddress(argv[q]) || (gethostbyname(argv[q]) != NULL && (strchr(argv[q], '.') != NULL))) && q+1==argc)
 	{
 		host = gethostbyname(argv[q]);
 
@@ -148,11 +470,12 @@ for (int q=0; q<argc; q++)
 	}
 	else 
 	 {
-	 	if (isValidIpAddress(argv[q]))
+	 	if (isValidIpAddress(argv[q])|| (gethostbyname(argv[q]) != NULL && (strchr(argv[q], '.') != NULL)) )
 	 	{
 	 		if(fork() == 0)
 			{
 				host = gethostbyname(argv[q]);
+				
 				break;
 			}
 			else continue;
@@ -161,13 +484,12 @@ for (int q=0; q<argc; q++)
 	 	
 	 }
 }
-unsigned short int pid = getpid();
- unsigned int ttl = 255;
+//printf("%d\n", datasize );
+
 //printf("%s\n", host->h_name);
 
 
-pthread_create (&thread1, NULL, print_message_function,(void *) &data1);
-
+//pthread_create (&thread1, NULL, print_message_function,(void *) &data1);
 
 
 struct sigaction act;
@@ -176,7 +498,7 @@ act.sa_handler = &on_alarm;
 act.sa_flags = SA_RESTART;  // Restart interrupted system calls
 sigaction(SIGALRM, &act, NULL);
 
-alarm(5);
+alarm(3600);
 
 
 
@@ -192,149 +514,75 @@ alarm(5);
   }
 setsockopt(s, IPPROTO_IP, IP_TTL, (const char *)&ttl, sizeof(ttl));
 //setsockopt(sock, SOL_IP, IP_TTL, (const char *)&ttl, sizeof(ttl));
-	time_t t;
-	srand(time(NULL));
-	/*
-	 FILE *file = fopen("/dev/urandom", "r");
-	 if (file == NULL)
-        printf("kokot\n"); //could not open file*/
-        printf("size of icmphdr %d\n",sizeof(icmphdr) );
+	
 
+
+pthread_create (&sender, NULL, sender_func,(void *) &s);
+pthread_create (&receiver, NULL, receiver_func,(void *) &s);
 while(1) {
-	char icmpbuffer[65000];
-	char *p = icmpbuffer;
-
-
-	sleep(1);
-	char str[datasize-41];
-
-	const char alphanum[] =     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz123456789";
  
-    for (int i = 0; i < datasize-41; ++i) {
+  sleep(ttime);
+  time_t rawtime;
+  struct tm * timeinfo;
+  char buffer [800];
+  char buffer2 [800];
+  struct timeval tv;
+  int millisec;
 
-        str[i] = alphanum[rand() % (sizeof(alphanum) - 1)];
+  gettimeofday(&tv, NULL);
+  millisec = lrint(tv.tv_usec/10000.0);
 
-    }
-    
+  time (&rawtime);
+  timeinfo = localtime (&rawtime);
 
-   
-  
-
-
-icmp = (icmphdr *) icmpbuffer;
-  icmp->type = ICMP_ECHO;
-  icmp->code = 0;
-  icmp->un.echo.id = pid;
-  icmp->checksum=0;
-  icmp->un.echo.sequence=sequence;
-  p+= sizeof(icmp);
-
-  for (int a =0 ; a!=strlen(str); a++)
-  	{
-
-  		*p = str[a];
-  		p++;
-  		//printf("%s\n", *p);
-  	}
-
-  	  printf("%s\n",icmpbuffer );
-
- 
-
-sendSockAddr.sin_family = AF_INET;
-  sendSockAddr.sin_port = 0;
-  memcpy(&(sendSockAddr.sin_addr), host->h_addr, host->h_length);
-
-icmp->checksum = 0;
-    icmp->un.echo.sequence = sequence;
-    icmp->checksum = checksum((unsigned char *)icmpbuffer, sizeof(icmphdr)+ sizeof(str)-1);
-   int check = sendto(s, (char *)icmpbuffer, sizeof(icmphdr)+ sizeof(str)-1, 0, (sockaddr *)&sendSockAddr, sizeof(sockaddr));
-
-
-time1.tv_nsec=0;
-  time1.tv_sec=0;
-
-
-   clock_gettime(CLOCK_MONOTONIC, &time1);
-	//printf("%d\n", check );
-   allpackets++;
-/*
-  
-  int check = send(s , message , strlen(message),0) ;
-printf("%d\n", check ); */
-
-  struct timeval timeout;
-  timeout.tv_sec = 1;
-  timeout.tv_usec = 0;
-
-  FD_ZERO(&mojSet); //vynulujeme štruktúru
-  FD_SET(s, &mojSet); //priradíme socket na ktorom chceme čakať
-
-  int timeoutflag=0;
-
-  rc=0;
-  rc = select(s+1, &mojSet, NULL, NULL, &timeout);
-  printf("%d\n", rc);
-
-  //if (FD_ISSET(s, &mojSet)) {printf("NOICE\n");}
-  
-
-
-  do 
+  strftime (buffer,80,"%F %T",timeinfo);
+  double loss= (double )(allpackets - okpackets)/allpackets;
+  	loss=loss*100;
+  //okpackets = 1;
+  if (okpackets!=allpackets)
   {
-  	lenght = 0;
-  	if (rc<=0) {
-  		//printf("packet lost\n");
-  		break;
+	//printf("%d  %d\n" ,allpackets, okpackets);
+  	
+  	if (okpackets==0)
+  	{
+  		printf("%s.%d %s status down\n",buffer,millisec,host->h_name);
+  		continue;
   	}
+  	
+  	
+  }
 
-	  if ((lenght = recvfrom(s, buffer, 1024, 0, (sockaddr *)&receiveSockAddr, &size)) == -1)
-		{
-		  //printf("chyba pri prijimani\n");
-		  break;
-		}
+  if (rflag==1)
+  	{
+  		if (rpackets!=0)
+  		{
+  			float pomer=0;
+  			pomer= (float)rpackets / (float) okpackets;
+  			pomer=pomer*100;
+			//printf("%f\n", pomer);
+  			printf("%s.%d %s %.3lf%% (%d) packets exceeded RTT threshold %dms\n",buffer,millisec,host->h_name,pomer, rpackets,(int)rtime );
+  			
+  			continue;
+  		}
+  		
 
-	ip = (iphdr *) buffer;
-	icmpRecv = (icmphdr *) (buffer + ip->ihl * 4);
-
-	if ((icmpRecv->un.echo.id == pid) && (icmpRecv->type == ICMP_ECHOREPLY) && (icmpRecv->un.echo.sequence == sequence))
-		{ //printf("sprava prijata\n");
-		  okpackets++;
-		}
-
-   }
- while (!((icmpRecv->un.echo.id == pid) && (icmpRecv->type == ICMP_ECHOREPLY) && (icmpRecv->un.echo.sequence == sequence)));
- sequence++;
- printf("%d / %d\n",okpackets, allpackets );
-}
-
-}
-
-
-void * print_message_function (void *ptr  )
-{
-   
-   timespec uptime;
-   uptime.tv_nsec=0;
-  uptime.tv_sec=0;
-
-  timespec uptime_current;
-   uptime_current.tv_nsec=0;
-  uptime_current.tv_sec=0;
-
-   clock_gettime(CLOCK_MONOTONIC, &uptime);
-   //printf("%d nigger\n",uptime.tv_sec);
+  	}
   
-   sleep(1);
-   
-   while(1)
-   {
-   		 clock_gettime(CLOCK_MONOTONIC, &uptime_current);
-   		if (((uptime_current.tv_sec-uptime.tv_sec)%5 == 0)){
-   		  printf("MAMMA MIA %d\n", okpackets);
-   		  sleep(1);
-   		}
-
-
-   }  return NULL; /* exit */
+if (okpackets!=allpackets)
+  {
+  printf("%s.%d %s %.3lf%% packet loss, %d packet lost\n",buffer,millisec,host->h_name,loss,allpackets-okpackets );
+  }		 
 }
+
+
+
+  
+
+}
+
+
+
+//podpora hostname - skontrolovať done
+//verbose done
+//ip/name namiesto uzol done
+//-r
